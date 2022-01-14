@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 
 	"github.com/philandstuff/dhall-golang/v6/core"
 	"github.com/philandstuff/dhall-golang/v6/imports"
@@ -39,37 +40,37 @@ var jsonConstructors core.Value = core.RecordLit{
 
 func mkJSONType() core.Value {
 	return core.Pi{
-		Label: "JSON",
+		Label:  "JSON",
 		Domain: core.Type,
 		Codomain: func(JSON core.Value) core.Value {
 			return core.Pi{
 				Label: "json",
 				Domain: core.RecordType{
 					"array": core.Pi{
-						Label: "_",
+						Label:  "_",
 						Domain: core.ListOf{JSON},
-						Codomain: func(_ core.Value) core.Value{
+						Codomain: func(_ core.Value) core.Value {
 							return JSON
 						},
 					},
 					"bool": core.Pi{
-						Label: "_",
+						Label:  "_",
 						Domain: core.Bool,
-						Codomain: func(_ core.Value) core.Value{
+						Codomain: func(_ core.Value) core.Value {
 							return JSON
 						},
 					},
 					"double": core.Pi{
-						Label: "_",
+						Label:  "_",
 						Domain: core.Double,
-						Codomain: func(_ core.Value) core.Value{
+						Codomain: func(_ core.Value) core.Value {
 							return JSON
 						},
 					},
 					"integer": core.Pi{
-						Label: "_",
+						Label:  "_",
 						Domain: core.Integer,
-						Codomain: func(_ core.Value) core.Value{
+						Codomain: func(_ core.Value) core.Value {
 							return JSON
 						},
 					},
@@ -78,18 +79,18 @@ func mkJSONType() core.Value {
 						Label: "_",
 						Domain: core.ListOf{
 							Type: core.RecordType{
-								"mapKey": core.Text,
+								"mapKey":   core.Text,
 								"mapValue": JSON,
 							},
 						},
-						Codomain: func(_ core.Value) core.Value{
+						Codomain: func(_ core.Value) core.Value {
 							return JSON
 						},
 					},
 					"string": core.Pi{
-						Label: "_",
+						Label:  "_",
 						Domain: core.Text,
-						Codomain: func(_ core.Value) core.Value{
+						Codomain: func(_ core.Value) core.Value {
 							return JSON
 						},
 					},
@@ -255,29 +256,52 @@ func encode(val reflect.Value, typ core.Value) (core.Value, error) {
 			break
 		}
 		rec := core.RecordLit{}
-	fields:
+		if err := encodeStruct(rec, val, e); err != nil {
+			return nil, err
+		}
+		return rec, nil
+	}
+
+	return nil, fmt.Errorf("can't encode %v as %v", val, typ)
+}
+
+func encodeStruct(rec core.RecordLit, val reflect.Value, e core.RecordType) error {
+	structType := val.Type()
+	var err error
+
+	for i := 0; i < structType.NumField(); i++ {
+		if structType.Field(i).Anonymous {
+			return encodeStruct(rec, val.Field(i), e)
+		}
+
 		for key, typ := range e {
-			var err error
-			structType := val.Type()
-			for i := 0; i < structType.NumField(); i++ {
-				tag := structType.Field(i).Tag.Get("dhall")
+			if tag := structType.Field(i).Tag.Get("dhall"); key == tag {
+				rec[key], err = encode(val.Field(i), typ)
+				if err != nil {
+					return err
+				}
+				break
+			} else if tag := structType.Field(i).Tag.Get("json"); tag != "" {
+				if idx := strings.Index(tag, ","); idx != -1 {
+					tag = tag[:idx]
+				}
 				if key == tag {
 					rec[key], err = encode(val.Field(i), typ)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					continue fields
+					break
+				}
+			} else if field := val.FieldByName(key); field.IsValid() {
+				rec[key], err = encode(field, typ)
+				if err != nil {
+					return err
 				}
 			}
-			rec[key], err = encode(val.FieldByName(key), typ)
-			if err != nil {
-				return nil, err
-			}
 		}
-		return rec, nil
-		// no UnsafePointer
 	}
-	return nil, fmt.Errorf("Can't encode %v as %v", val, typ)
+
+	return nil
 }
 
 // dhallShim takes a Callable and wraps it so that it can be passed
@@ -479,21 +503,7 @@ types:
 		}
 	case core.RecordLit:
 		if v.Kind() == reflect.Struct {
-			structType := v.Type()
-			for i := 0; i < structType.NumField(); i++ {
-				// FIXME ignores fields in RecordLit not in Struct
-				tag := structType.Field(i).Tag.Get("dhall")
-				var err error
-				if tag != "" {
-					err = decode(e[tag], v.Field(i))
-				} else {
-					err = decode(e[structType.Field(i).Name], v.Field(i))
-				}
-				if err != nil {
-					return err
-				}
-			}
-			return nil
+			return decodeStruct(e, v)
 		}
 		if v.Kind() == reflect.Interface {
 			// decode into a map[string]interface{}
@@ -517,10 +527,10 @@ types:
 		if v.Kind() == reflect.Func {
 			fnType := v.Type()
 			if fnType.NumIn() == 0 {
-				return fmt.Errorf("You must decode into a function type with at least one input parameter, not %v", fnType)
+				return fmt.Errorf("you must decode into a function type with at least one input parameter, not %v", fnType)
 			}
 			if fnType.NumOut() != 1 {
-				return fmt.Errorf("You must decode into a function type with exactly one output parameter, not %v", fnType)
+				return fmt.Errorf("you must decode into a function type with exactly one output parameter, not %v", fnType)
 			}
 			returnType := fnType.Out(0)
 
@@ -546,7 +556,36 @@ types:
 			return nil
 		}
 	}
-	return fmt.Errorf("Don't know how to decode %v into %v", e, v.Kind())
+	return fmt.Errorf("don't know how to decode %v into %v", e, v.Kind())
+}
+
+func decodeStruct(e core.RecordLit, v reflect.Value) error {
+	structType := v.Type()
+	for i := 0; i < structType.NumField(); i++ {
+		if structType.Field(i).Anonymous {
+			decodeStruct(e, v.Field(i))
+			continue
+		}
+		var err error
+		// FIXME ignores fields in RecordLit not in Struct
+		if tag := structType.Field(i).Tag.Get("dhall"); tag != "" {
+			err = decode(e[tag], v.Field(i))
+		} else if tag := structType.Field(i).Tag.Get("json"); tag != "" {
+			if tag == "-" {
+				continue
+			}
+			if idx := strings.Index(tag, ","); idx != -1 {
+				tag = tag[:idx]
+			}
+			err = decode(e[tag], v.Field(i))
+		} else {
+			err = decode(e[structType.Field(i).Name], v.Field(i))
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // decodeJSON decodes values of Prelude's JSON Type

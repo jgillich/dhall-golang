@@ -38,6 +38,16 @@ type testTaggedStruct struct {
 	Bar string
 }
 
+type testJsonTaggedStruct struct {
+	Foo uint `json:"baz"`
+	Bar string
+	testInlined
+}
+
+type testInlined struct {
+	Qux string `json:"qux"`
+}
+
 var _ = Describe("Decode", func() {
 	DescribeTable("Simple types", DecodeAndCompare,
 		Entry("unmarshals DoubleLit into float32",
@@ -103,6 +113,10 @@ var _ = Describe("Decode", func() {
 			core.RecordLit{"baz": core.NaturalLit(3), "Bar": core.PlainTextLit("xyzzy")},
 			new(testTaggedStruct),
 			testTaggedStruct{Foo: 3, Bar: "xyzzy"}),
+		Entry("unmarshals {baz : Natural, Bar : Text, qux : Text} into json tagged struct",
+			core.RecordLit{"baz": core.NaturalLit(3), "Bar": core.PlainTextLit("xyzzy"), "qux": core.PlainTextLit("123")},
+			new(testJsonTaggedStruct),
+			testJsonTaggedStruct{Foo: 3, Bar: "xyzzy", testInlined: testInlined{Qux: "123"}}),
 		Entry("unmarshals None {Foo : Natural, Bar : Text} into struct",
 			core.NoneOf{core.RecordType{"Foo": core.Natural, "Bar": core.Text}},
 			new(testStruct),
@@ -169,6 +183,10 @@ var _ = Describe("Decode", func() {
 		Entry("record into tagged struct",
 			term.RecordType{"baz": term.Natural, "Bar": term.Text},
 			testTaggedStruct{Foo: 1, Bar: "howdy"},
+		),
+		Entry("record into json tagged struct",
+			term.RecordType{"baz": term.Natural, "Bar": term.Text, "qux": term.Text},
+			testJsonTaggedStruct{Foo: 1, Bar: "howdy", testInlined: testInlined{Qux: "123"}},
 		),
 		Entry("record into struct ptr",
 			term.RecordType{"Foo": term.Natural, "Bar": term.Text},
